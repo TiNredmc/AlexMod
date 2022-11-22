@@ -1,0 +1,286 @@
+// Project AlexMod. Custom firmware for Alexmos SimpleBGC expansion board.
+// Using SPWM technique for BLDC position controlling.
+// Coded by TinLethax 2022/11/17 +7
+
+// Motor Control pinout
+// ATTiny -> L6234
+// PB0 -> IN1
+// PB4 -> IN2
+// PB2 -> IN3
+#define BLDC_U  0
+#define BLDC_V  4
+#define BLDC_W  2
+
+#include "lut.h"
+
+uint8_t sinU = 0;
+uint8_t sinV = 0;
+uint8_t sinW = 0;
+
+// I2C stuffs
+// I2C Pinout
+// PA0 -> SDA
+// PA2 -> SCL
+#define SDA 0
+#define SCL 2
+
+volatile uint8_t i2cfsm = 0;
+#define USI_SLAVE_CHECK_ADDRESS                 1
+#define USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA    2
+#define USI_SLAVE_SEND_DATA                     3
+#define USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA  4
+#define USI_SLAVE_REQUEST_DATA                  5
+#define USI_SLAVE_GET_DATA_AND_SEND_ACK         6
+
+// I2C slave address (7bit)
+#define I2C_ADDR  0x30
+
+// I2C buffer
+volatile uint8_t i2cbuf[2] = {0x00, 0x00};
+volatile uint8_t i2ccnt = 0;
+uint8_t dataflag = 0;
+
+volatile uint16_t step_cnt = 0;
+volatile uint16_t step_max = 0;
+
+volatile uint8_t main_fsm = 0;
+
+void setup() {
+  // put your setup code here, to run once:
+  // Init Motor Pin
+  DDRB |= (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+  PORTB &= ~((1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W));
+  // Init LED pin
+  DDRA |= (1 << 4);
+
+  // Set up the Universal Serial interface as I2C
+  PORTA |= (1 << SCL) | (1 << SDA);
+  DDRA |= (1 << SCL);
+  DDRA &= ~(1 << SDA);
+  USIPP = 0x01;// Use PA0 and PA2 as SDA and SCL.
+  USICR = 0xA8;
+  USISR = 0xF0;
+
+  // TODO : Feed back system from current Sense resistor 
+  // Set up comparator interrupt on GPIO PA7(AIN1) vs PA6(AIN0).
+  // PA7 AIN1 as Positive input to comp (Kind of VIN for comparing with VREF)
+  // PA6 AIN0 as Negative input to comp (VREF)
+  //ACSRA = (1 << 3) | 0x03;// Enable Analog conparator Interrupt with Rising edge detection
+  //ACSRB = 0x02;// AIN1 as Positive input, AIN0 as Negative input.
+
+  // Setup Timer 1 PWM
+  // Enable Timer clock Sync mode by disable PCKE
+  PLLCSR |= (1 << 2);
+
+  OCR1C = 0xFF; // Counter max
+
+  // Enable OCR1A's compare interrupt and enable Overflow interrupt
+  //TIMSK = (1 << 2);
+  // Set clock prescaler and Invert PWM value
+  TCCR1B = 0x84;// Sync clock mode : CK/8
+  // Set Fast PWM Mode
+  TCCR1D = 0x00;// Enable WGM10 bit (Fast PWM mode)
+  TCCR1A = 0x03;// Enable PWM1A PWM1B
+  TCCR1C = 0x01;// Enable PWM1D
+  TCCR1C |= 0x55;// Enable COM1A0, COM1B0 and COM1D0
+
+  // Enable /OC1A /OC1B and /OC1D (slash denotes the invert signal pin)
+  // Alexmos Exansion board uses invert output signal
+  // That's why we need to set TCCR1B to have invert PWM
+  //TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+
+  // Initial PWM value
+  OCR1B = 0;// U phase
+  OCR1A = 0;// V phase
+  OCR1D = 0;// W phase
+
+  // Initial Sine angle.
+  sinU = 0;
+  sinV = sinU + (256 / 3);
+  sinW = sinV + (256 / 3);
+
+  sei();
+}
+
+// TODO : Analog comparator interrupt for current clamping
+//ISR(ANA_COMP_vect) {
+//
+//}
+
+ISR(USI_START_vect) {
+  i2cfsm = USI_SLAVE_CHECK_ADDRESS;
+  DDRA &= ~(1 << SDA);
+  while ((PINA & (1 << SCL)) && (PINA & (1 << SDA)));
+
+  if (PINA & ( 1 << SCL)) {
+    USICR = 0xA8;
+  } else {
+    USICR = 0xF8;
+  }
+
+  USISR = 0xF0;
+}
+
+ISR(USI_OVF_vect) {
+  switch (i2cfsm) {
+    case USI_SLAVE_CHECK_ADDRESS :
+      if ((USIDR == 0) || ((USIDR >> 1) == I2C_ADDR)) {
+        if (USIDR & 0x01) {
+          i2cfsm = USI_SLAVE_SEND_DATA;
+        } else {
+          i2cfsm = USI_SLAVE_REQUEST_DATA;
+        }
+
+        USIDR = 0;
+        DDRA |= (1 << SDA);
+        USISR = 0x7E;
+      } else {
+        DDRA &= ~(1 << SDA);
+        USICR = 0xA8;
+        USISR = 0x70;
+      }
+
+      TCCR1E = 0x00;// Stop motor immediately when new I2C commu started
+      step_cnt = 0;
+      main_fsm = 0;
+
+      break;
+
+    case USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA :
+      if (USIDR) {
+        DDRA &= ~(1 << SDA);
+        USICR = 0xA8;
+        USISR = 0x70;
+        return;
+      }
+
+    case USI_SLAVE_SEND_DATA :
+      // TODO
+      if (i2ccnt != 1) {
+        USIDR = i2cbuf[i2ccnt++];
+      } else {
+        i2ccnt = 0;
+        DDRA &= ~(1 << SDA);
+        USICR = 0xA8;
+        USISR = 0x70;
+        return;
+      }
+
+      i2cfsm = USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA;
+      DDRA |= (1 << SDA);
+      USISR = 0x70;
+      break;
+
+    case USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA :
+      i2cfsm = USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA;
+      DDRA &= ~(1 << SDA);
+      USIDR = 0;
+      USISR = 0x7E;
+      break;
+
+    case USI_SLAVE_REQUEST_DATA :
+      i2cfsm = USI_SLAVE_GET_DATA_AND_SEND_ACK;
+      DDRA &= ~(1 << SDA);
+      USISR = 0x70;
+
+      if (i2ccnt != 2) {
+        while ((USISR & 0xAE) == 0);
+        if (USISR & (1 << 5)) {
+          i2ccnt = 0;
+        }
+      }
+
+      break;
+
+    case USI_SLAVE_GET_DATA_AND_SEND_ACK :
+      i2cfsm = USI_SLAVE_REQUEST_DATA;
+
+      if (i2ccnt != (sizeof(i2cbuf)-1)) {
+        i2cbuf[i2ccnt++] = USIDR;
+
+        USIDR = 0;
+        DDRA |= (1 << SDA);
+        USISR = 0x7E;
+      } else {
+        i2cbuf[i2ccnt++] = USIDR;
+        i2ccnt = 0;
+        dataflag = 1;
+        DDRA &= ~(1 << SDA);
+        USISR = 0x7E;
+      }
+
+      break;
+  }
+}
+
+void loop() {
+
+  switch (main_fsm) {
+    case 0:// IDLE, wait for command from I2C host
+      if (dataflag == 1) {
+        if(i2cbuf[1] == 0)
+          break;
+        PORTA |= (1 << 4);
+        dataflag = 0;
+        step_max = (i2cbuf[1] + 1) * 4;
+        switch (i2cbuf[0] & 0xC0) {
+          case 0x40:// Step backward
+            TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 1;
+            break;
+
+          case 0x80:// Step forward
+            TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 2;
+            break;
+        }
+      }
+
+      break;
+
+    case 1:// Step forward
+      OCR1B = pgm_read_byte(&lut[sinU++]);
+      OCR1A = pgm_read_byte(&lut[sinV++]);
+      OCR1D = pgm_read_byte(&lut[sinW++]);
+      step_cnt++;
+      delayMicroseconds(7);
+
+      if (step_cnt == step_max) {
+        TCCR1E = 0x00;// Stop motor immediately
+        main_fsm = 3;
+        break;
+      }
+
+      break;
+
+    case 2:// Step backward
+      OCR1B = pgm_read_byte(&lut[sinU--]);
+      OCR1A = pgm_read_byte(&lut[sinV--]);
+      OCR1D = pgm_read_byte(&lut[sinW--]);
+      step_cnt++;
+      delayMicroseconds(7);
+
+      if (step_cnt == step_max) {
+        TCCR1E = 0x00;// Stop motor immediately
+        main_fsm = 3;
+        break;
+      }
+
+      break;
+
+    case 3:// go back to main_fsm = 0
+      PORTA &= ~(1 << 4);
+      main_fsm = 0;
+      i2cbuf[0] = 0x00;
+      i2cbuf[1] = 0x00;
+      step_cnt = 0x00;
+
+      break;
+  }
+}
