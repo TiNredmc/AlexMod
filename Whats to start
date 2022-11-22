@@ -1,3 +1,0 @@
-So this is the first text file by me. and I'm gonna said that not easy to do with the clodes source hardware. It seem the AlexMos 3rd expansion board is for YAW axis gimbal motor.
-The interface of the module can be I2C. I just guess it's use I2C because the connection had SDA and SCL. It's lived same data line with the MPU6050
-of the Main 2axis controller board.
