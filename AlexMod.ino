@@ -2,6 +2,8 @@
 // Using SPWM technique for BLDC position controlling.
 // Coded by TinLethax 2022/11/17 +7
 
+#include <avr/power.h>
+
 // Motor Control pinout
 // ATTiny -> L6234
 // PB0 -> IN1
@@ -36,7 +38,8 @@ volatile uint8_t i2cfsm = 0;
 #define I2C_ADDR  0x30
 
 // I2C buffer
-volatile uint8_t i2cbuf[2] = {0x00, 0x00};
+#define MAX_CMD_BYTE  3 // Command buffer lenght
+volatile uint8_t i2cbuf[MAX_CMD_BYTE] = {0};
 volatile uint8_t i2ccnt = 0;
 uint8_t dataflag = 0;
 
@@ -45,37 +48,31 @@ volatile uint16_t step_max = 0;
 
 volatile uint8_t main_fsm = 0;
 
-void setup() {
-  // put your setup code here, to run once:
+void initGPIO(){
   // Init Motor Pin
   DDRB |= (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
   PORTB &= ~((1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W));
   // Init LED pin
-  DDRA |= (1 << 4);
+  DDRA |= (1 << 4);  
+}
 
+void initUSI(){
   // Set up the Universal Serial interface as I2C
   PORTA |= (1 << SCL) | (1 << SDA);
   DDRA |= (1 << SCL);
   DDRA &= ~(1 << SDA);
   USIPP = 0x01;// Use PA0 and PA2 as SDA and SCL.
   USICR = 0xA8;
-  USISR = 0xF0;
+  USISR = 0xF0;  
+}
 
-  // TODO : Feed back system from current Sense resistor 
-  // Set up comparator interrupt on GPIO PA7(AIN1) vs PA6(AIN0).
-  // PA7 AIN1 as Positive input to comp (Kind of VIN for comparing with VREF)
-  // PA6 AIN0 as Negative input to comp (VREF)
-  //ACSRA = (1 << 3) | 0x03;// Enable Analog conparator Interrupt with Rising edge detection
-  //ACSRB = 0x02;// AIN1 as Positive input, AIN0 as Negative input.
-
+void initTimer1(){
   // Setup Timer 1 PWM
   // Enable Timer clock Sync mode by disable PCKE
   PLLCSR |= (1 << 2);
 
   OCR1C = 0xFF; // Counter max
 
-  // Enable OCR1A's compare interrupt and enable Overflow interrupt
-  //TIMSK = (1 << 2);
   // Set clock prescaler and Invert PWM value
   TCCR1B = 0x84;// Sync clock mode : CK/8
   // Set Fast PWM Mode
@@ -87,30 +84,34 @@ void setup() {
   // Enable /OC1A /OC1B and /OC1D (slash denotes the invert signal pin)
   // Alexmos Exansion board uses invert output signal
   // That's why we need to set TCCR1B to have invert PWM
-  //TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+  // TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
+}
+
+void setup() {
+  // put your setup code here, to run once:
+  
+  initGPIO();
+  initUSI();
+  initTimer1();
 
   // Initial PWM value
   OCR1B = 0;// U phase
   OCR1A = 0;// V phase
   OCR1D = 0;// W phase
 
-  // Initial Sine angle.
+  // Initial Sine angle in terms of LUT address.
+  // LUT address = 360/256 * Theta ; Theta is angle in degree.
   sinU = 0;
-  sinV = sinU + (256 / 3);
-  sinW = sinV + (256 / 3);
+  sinV = 85;
+  sinW = 170;
 
-  sei();
+  sei();// Enable Global interrupt
 }
-
-// TODO : Analog comparator interrupt for current clamping
-//ISR(ANA_COMP_vect) {
-//
-//}
 
 ISR(USI_START_vect) {
   i2cfsm = USI_SLAVE_CHECK_ADDRESS;
   DDRA &= ~(1 << SDA);
-  while ((PINA & (1 << SCL)) && (PINA & (1 << SDA)));
+  while ((PINA & (1 << SCL)) && !(PINA & (1 << SDA)));
 
   if (PINA & ( 1 << SCL)) {
     USICR = 0xA8;
@@ -156,9 +157,10 @@ ISR(USI_OVF_vect) {
 
     case USI_SLAVE_SEND_DATA :
       // TODO
-      if (i2ccnt != 1) {
+      if (i2ccnt != (MAX_CMD_BYTE-1)) {
         USIDR = i2cbuf[i2ccnt++];
       } else {
+        USIDR = i2cbuf[i2ccnt];
         i2ccnt = 0;
         DDRA &= ~(1 << SDA);
         USICR = 0xA8;
@@ -183,7 +185,7 @@ ISR(USI_OVF_vect) {
       DDRA &= ~(1 << SDA);
       USISR = 0x70;
 
-      if (i2ccnt != 2) {
+      if (i2ccnt != MAX_CMD_BYTE) {
         while ((USISR & 0xAE) == 0);
         if (USISR & (1 << 5)) {
           i2ccnt = 0;
@@ -195,14 +197,14 @@ ISR(USI_OVF_vect) {
     case USI_SLAVE_GET_DATA_AND_SEND_ACK :
       i2cfsm = USI_SLAVE_REQUEST_DATA;
 
-      if (i2ccnt != (sizeof(i2cbuf)-1)) {
+      if (i2ccnt != (MAX_CMD_BYTE-1)) {
         i2cbuf[i2ccnt++] = USIDR;
 
         USIDR = 0;
         DDRA |= (1 << SDA);
         USISR = 0x7E;
       } else {
-        i2cbuf[i2ccnt++] = USIDR;
+        i2cbuf[i2ccnt] = USIDR;
         i2ccnt = 0;
         dataflag = 1;
         DDRA &= ~(1 << SDA);
@@ -218,11 +220,18 @@ void loop() {
   switch (main_fsm) {
     case 0:// IDLE, wait for command from I2C host
       if (dataflag == 1) {
-        if(i2cbuf[1] == 0)
+        // If step is 0. Just dont move the motor.
+        if((i2cbuf[1] | i2cbuf[2]) == 0)
           break;
-        PORTA |= (1 << 4);
-        dataflag = 0;
-        step_max = (i2cbuf[1] + 1) * 4;
+          
+        PORTA |= (1 << 4);// Turn LED status on.
+        
+        dataflag = 0;// clear data flag.
+
+        // Set maximum step for counting.
+        step_max = i2cbuf[2] << 8;
+        step_max |= i2cbuf[1];
+        
         switch (i2cbuf[0] & 0xC0) {
           case 0x40:// Step backward
             TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
@@ -245,10 +254,13 @@ void loop() {
       break;
 
     case 1:// Step forward
+      cli();
       OCR1B = pgm_read_byte(&lut[sinU++]);
       OCR1A = pgm_read_byte(&lut[sinV++]);
       OCR1D = pgm_read_byte(&lut[sinW++]);
+      sei();
       step_cnt++;
+      
       delayMicroseconds(7);
 
       if (step_cnt == step_max) {
@@ -260,9 +272,11 @@ void loop() {
       break;
 
     case 2:// Step backward
+      cli();
       OCR1B = pgm_read_byte(&lut[sinU--]);
       OCR1A = pgm_read_byte(&lut[sinV--]);
       OCR1D = pgm_read_byte(&lut[sinW--]);
+      sei();
       step_cnt++;
       delayMicroseconds(7);
 
@@ -277,10 +291,9 @@ void loop() {
     case 3:// go back to main_fsm = 0
       PORTA &= ~(1 << 4);
       main_fsm = 0;
-      i2cbuf[0] = 0x00;
-      i2cbuf[1] = 0x00;
       step_cnt = 0x00;
 
       break;
   }
+  
 }
