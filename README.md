@@ -7,10 +7,6 @@ How it works ?
 
 The onboard microcontroller ATtiny261A generates 3 Phase (3 channels PWM for U V and W phase) 32KHz PWM from Timer 1. This result in resultant vector A.K.A position of the rotor of the BLDC motor. By changing the Sine angle (Step through Sine LUT). We can precisely control the angle of the rotor. Of course, the precision is depends on PWM resolution (In this case is 8 bit instead of 10 bit) and Sine LUT resolution (Which I went with 256 Sine steps).
 
-This technique is called "**Field Oriented Control**" or **FOC** for short. But the actual FOC requires Close loop feedback for Load compensation. 
-
-For this project. This isn't 100% FOC. Since there's no feedback, so called **"Open Loop Control"**
-
 The code I wrote use I2C to communicate between the Master device (Arduino Uno or anything) and Slave device (ATtiny261A) with 7 bit address of **0x30**. Master send 3 bytes command. First byte is the direction and the rest are step count.
 
 ```
