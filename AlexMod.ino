@@ -80,11 +80,6 @@ void initTimer1(){
   TCCR1A = 0x03;// Enable PWM1A PWM1B
   TCCR1C = 0x01;// Enable PWM1D
   TCCR1C |= 0x55;// Enable COM1A0, COM1B0 and COM1D0
-
-  // Enable /OC1A /OC1B and /OC1D (slash denotes the invert signal pin)
-  // Alexmos Exansion board uses invert output signal
-  // That's why we need to set TCCR1B to have invert PWM
-  // TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
 }
 
 void setup() {
@@ -141,7 +136,6 @@ ISR(USI_OVF_vect) {
         USISR = 0x70;
       }
 
-      TCCR1E = 0x00;// Stop motor immediately when new I2C commu started
       step_cnt = 0;
       main_fsm = 0;
 
@@ -234,7 +228,6 @@ void loop() {
         
         switch (i2cbuf[0] & 0xC0) {
           case 0x40:// Step backward
-            TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
             OCR1B = pgm_read_byte(&lut[sinU]);
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
@@ -242,7 +235,6 @@ void loop() {
             break;
 
           case 0x80:// Step forward
-            TCCR1E = (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
             OCR1B = pgm_read_byte(&lut[sinU]);
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
@@ -264,7 +256,6 @@ void loop() {
       delayMicroseconds(7);
 
       if (step_cnt == step_max) {
-        TCCR1E = 0x00;// Stop motor immediately
         main_fsm = 3;
         break;
       }
@@ -281,7 +272,6 @@ void loop() {
       delayMicroseconds(7);
 
       if (step_cnt == step_max) {
-        TCCR1E = 0x00;// Stop motor immediately
         main_fsm = 3;
         break;
       }
