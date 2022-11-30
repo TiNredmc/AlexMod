@@ -74,7 +74,7 @@ void initTimer1(){
   OCR1C = 0xFF; // Counter max
 
   // Set clock prescaler and Invert PWM value
-  TCCR1B = 0x84;// Sync clock mode : CK/8
+  TCCR1B = 0x83;// Sync clock mode : CK/4
   // Set Fast PWM Mode
   TCCR1D = 0x00;// Enable WGM10 bit (Fast PWM mode)
   TCCR1A = 0x03;// Enable PWM1A PWM1B
@@ -217,12 +217,14 @@ void loop() {
         // If step is 0. Just dont move the motor.
         if((i2cbuf[1] | i2cbuf[2]) == 0)
           break;
-          
+
         PORTA |= (1 << 4);// Turn LED status on.
         
         dataflag = 0;// clear data flag.
 
         // Set maximum step for counting.
+        // My motor spin 360 degree with 1792 steps
+        // FYI. I use 2204 260kV gimbal motor.
         step_max = i2cbuf[2] << 8;
         step_max |= i2cbuf[1];
         
@@ -253,7 +255,7 @@ void loop() {
       sei();
       step_cnt++;
       
-      delayMicroseconds(7);
+      delayMicroseconds(100);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
@@ -269,7 +271,7 @@ void loop() {
       OCR1D = pgm_read_byte(&lut[sinW--]);
       sei();
       step_cnt++;
-      delayMicroseconds(7);
+      delayMicroseconds(100);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
