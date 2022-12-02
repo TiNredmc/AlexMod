@@ -38,13 +38,15 @@ volatile uint8_t i2cfsm = 0;
 #define I2C_ADDR  0x30
 
 // I2C buffer
-#define MAX_CMD_BYTE  3 // Command buffer lenght
+#define MAX_CMD_BYTE  4 // Command buffer lenght
 volatile uint8_t i2cbuf[MAX_CMD_BYTE] = {0};
 volatile uint8_t i2ccnt = 0;
 uint8_t dataflag = 0;
 
 volatile uint16_t step_cnt = 0;
 volatile uint16_t step_max = 0;
+#define DEFAULT_STEP_DELAY 80
+volatile uint16_t step_delay = DEFAULT_STEP_DELAY;
 
 volatile uint8_t main_fsm = 0;
 
@@ -76,7 +78,7 @@ void initTimer1(){
   // Set clock prescaler and Invert PWM value
   TCCR1B = 0x83;// Sync clock mode : CK/4
   // Set Fast PWM Mode
-  TCCR1D = 0x00;// Enable WGM10 bit (Fast PWM mode)
+  TCCR1D = 0x01;// Enable WGM10 bit (Fast PWM mode)
   TCCR1A = 0x03;// Enable PWM1A PWM1B
   TCCR1C = 0x01;// Enable PWM1D
   TCCR1C |= 0x55;// Enable COM1A0, COM1B0 and COM1D0
@@ -137,6 +139,7 @@ ISR(USI_OVF_vect) {
       }
 
       step_cnt = 0;
+      step_delay = DEFAULT_STEP_DELAY;// default motor step delay
       main_fsm = 0;
 
       break;
@@ -227,6 +230,10 @@ void loop() {
         // FYI. I use 2204 260kV gimbal motor.
         step_max = i2cbuf[2] << 8;
         step_max |= i2cbuf[1];
+
+        step_delay = i2cbuf[3] * 80;
+        if(step_delay < DEFAULT_STEP_DELAY)
+          step_delay = DEFAULT_STEP_DELAY;
         
         switch (i2cbuf[0] & 0xC0) {
           case 0x40:// Step backward
@@ -255,7 +262,7 @@ void loop() {
       sei();
       step_cnt++;
       
-      delayMicroseconds(80);
+      delayMicroseconds(step_delay);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
@@ -271,7 +278,7 @@ void loop() {
       OCR1D = pgm_read_byte(&lut[sinW--]);
       sei();
       step_cnt++;
-      delayMicroseconds(80);
+      delayMicroseconds(step_delay);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
