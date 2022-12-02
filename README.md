@@ -10,9 +10,9 @@ The onboard microcontroller ATtiny261A generates 3 Phase (3 channels PWM for U V
 The code I wrote use I2C to communicate between the Master device (Arduino Uno or anything) and Slave device (ATtiny261A) with 7 bit address of **0x30**. Master send 3 bytes command. First byte is the direction and the rest are step count.
 
 ```
-[    First Byte      ]   [     Second byte    ]   [     Thrid byte     ]
-7  6  5  4  3  2  1  0   7  6  5  4  3  2  1  0   7  6  5  4  3  2  1  0
-FW BW X  X  X  X  X  X      Step count from 0 - 65535 (LSB Byte first)
+[    First Byte      ]   [     Second byte    ]   [     Thrid byte     ]   [	 Fourth byte    ]
+7  6  5  4  3  2  1  0   7  6  5  4  3  2  1  0   7  6  5  4  3  2  1  0   7  6  5  4  3  2  1  0
+FW BW X  X  X  X  X  X      Step count from 0 - 65535 (LSB Byte first)     Delay interval 0 - 255
 ```
 FW and BW bit
 -
@@ -27,6 +27,10 @@ Step count
 -
 Step count from 0 to 65535. **Send LSB byte first then send the MSB Byte**. Sending 0 step result in no motor movement.
 
+Delay internal
+-
+Delay interval of changing Sine angle . Higher he number. The slower the angle change.
+
 Arduino Setting up. *IMPORTANT*
 =
 
@@ -39,6 +43,5 @@ Arduino Setting up. *IMPORTANT*
 TODO
 =
 
-- Controllable speed.
 - Save motor constant into EEPROM for degree control mode.
 - came up with fomular to calculate the motor constant.
