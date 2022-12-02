@@ -255,7 +255,7 @@ void loop() {
       sei();
       step_cnt++;
       
-      delayMicroseconds(100);
+      delayMicroseconds(80);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
@@ -271,7 +271,7 @@ void loop() {
       OCR1D = pgm_read_byte(&lut[sinW--]);
       sei();
       step_cnt++;
-      delayMicroseconds(100);
+      delayMicroseconds(80);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
