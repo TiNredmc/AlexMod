@@ -50,25 +50,41 @@ volatile uint16_t step_delay = DEFAULT_STEP_DELAY;
 
 volatile uint8_t main_fsm = 0;
 
-void initGPIO(){
+void initGPIO() {
   // Init Motor Pin
   DDRB |= (1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W);
   PORTB &= ~((1 << BLDC_U) | (1 << BLDC_V) | (1 << BLDC_W));
   // Init LED pin
-  DDRA |= (1 << 4);  
+  DDRA |= (1 << 4);
 }
 
-void initUSI(){
+void initUSI() {
   // Set up the Universal Serial interface as I2C
   PORTA |= (1 << SCL) | (1 << SDA);
   DDRA |= (1 << SCL);
   DDRA &= ~(1 << SDA);
   USIPP = 0x01;// Use PA0 and PA2 as SDA and SCL.
   USICR = 0xA8;
-  USISR = 0xF0;  
+  USISR = 0xF0;
 }
 
-void initTimer1(){
+void initTimer0() {
+  TCCR0A = 0x01;// Enable CTC mode
+  TCCR0B = 0x01;// No clock prescaler. Timer runs at 8MHz
+
+  OCR0A = 0;
+  TIMSK |= (1 << 4);
+}
+
+void deinitTimer0() {
+  TIFR = (1 << 4);
+  TIMSK = 0x00;
+  TCCR0A = 0x00;
+  TCCR0B = 0x00;
+  OCR0A = 0;
+}
+
+void initTimer1() {
   // Setup Timer 1 PWM
   // Enable Timer clock Sync mode by disable PCKE
   PLLCSR |= (1 << 2);
@@ -86,7 +102,6 @@ void initTimer1(){
 
 void setup() {
   // put your setup code here, to run once:
-  
   initGPIO();
   initUSI();
   initTimer1();
@@ -154,7 +169,7 @@ ISR(USI_OVF_vect) {
 
     case USI_SLAVE_SEND_DATA :
       // TODO
-      if (i2ccnt != (MAX_CMD_BYTE-1)) {
+      if (i2ccnt != (MAX_CMD_BYTE - 1)) {
         USIDR = i2cbuf[i2ccnt++];
       } else {
         USIDR = i2cbuf[i2ccnt];
@@ -194,7 +209,7 @@ ISR(USI_OVF_vect) {
     case USI_SLAVE_GET_DATA_AND_SEND_ACK :
       i2cfsm = USI_SLAVE_REQUEST_DATA;
 
-      if (i2ccnt != (MAX_CMD_BYTE-1)) {
+      if (i2ccnt != (MAX_CMD_BYTE - 1)) {
         i2cbuf[i2ccnt++] = USIDR;
 
         USIDR = 0;
@@ -212,57 +227,14 @@ ISR(USI_OVF_vect) {
   }
 }
 
-void loop() {
-
+ISR(TIMER0_COMPA_vect) {
+  PORTA |= (1 << 4);// Turn LED status on.
   switch (main_fsm) {
-    case 0:// IDLE, wait for command from I2C host
-      if (dataflag == 1) {
-        // If step is 0. Just dont move the motor.
-        if((i2cbuf[1] | i2cbuf[2]) == 0)
-          break;
-
-        PORTA |= (1 << 4);// Turn LED status on.
-        
-        dataflag = 0;// clear data flag.
-
-        // Set maximum step for counting.
-        // My motor spin 360 degree with 1792 steps
-        // FYI. I use 2204 260kV gimbal motor.
-        step_max = i2cbuf[2] << 8;
-        step_max |= i2cbuf[1];
-
-        step_delay = i2cbuf[3] * 80;
-        if(step_delay < DEFAULT_STEP_DELAY)
-          step_delay = DEFAULT_STEP_DELAY;
-        
-        switch (i2cbuf[0] & 0xC0) {
-          case 0x40:// Step backward
-            OCR1B = pgm_read_byte(&lut[sinU]);
-            OCR1A = pgm_read_byte(&lut[sinV]);
-            OCR1D = pgm_read_byte(&lut[sinW]);
-            main_fsm = 1;
-            break;
-
-          case 0x80:// Step forward
-            OCR1B = pgm_read_byte(&lut[sinU]);
-            OCR1A = pgm_read_byte(&lut[sinV]);
-            OCR1D = pgm_read_byte(&lut[sinW]);
-            main_fsm = 2;
-            break;
-        }
-      }
-
-      break;
-
     case 1:// Step forward
-      cli();
       OCR1B = pgm_read_byte(&lut[sinU++]);
       OCR1A = pgm_read_byte(&lut[sinV++]);
       OCR1D = pgm_read_byte(&lut[sinW++]);
-      sei();
       step_cnt++;
-      
-      delayMicroseconds(step_delay);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
@@ -272,13 +244,10 @@ void loop() {
       break;
 
     case 2:// Step backward
-      cli();
       OCR1B = pgm_read_byte(&lut[sinU--]);
       OCR1A = pgm_read_byte(&lut[sinV--]);
       OCR1D = pgm_read_byte(&lut[sinW--]);
-      sei();
       step_cnt++;
-      delayMicroseconds(step_delay);
 
       if (step_cnt == step_max) {
         main_fsm = 3;
@@ -286,13 +255,58 @@ void loop() {
       }
 
       break;
+  }
 
+}
+
+void loop() {
+
+  switch (main_fsm) {
+    case 0:// IDLE, wait for command from I2C host
+      if (dataflag == 1) {
+        // If step is 0. Just dont move the motor.
+        if ((i2cbuf[1] | i2cbuf[2]) == 0)
+          break;
+
+        dataflag = 0;// clear data flag.
+
+        // Set maximum step for counting.
+        // My motor spin 360 degree with 1792 steps
+        // FYI. I use 2204 260kV gimbal motor.
+        step_max = i2cbuf[2] << 8;
+        step_max |= i2cbuf[1];
+        OCR0A = i2cbuf[3];
+        if (step_delay < DEFAULT_STEP_DELAY)
+          step_delay = DEFAULT_STEP_DELAY;
+
+        switch (i2cbuf[0] & 0xC0) {
+          case 0x40:// Step backward
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 1;
+            initTimer0();
+            break;
+
+          case 0x80:// Step forward
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 2;
+            initTimer0();
+            break;
+        }
+      }
+
+      break;
+      
     case 3:// go back to main_fsm = 0
+      deinitTimer0();
       PORTA &= ~(1 << 4);
       main_fsm = 0;
       step_cnt = 0x00;
 
       break;
   }
-  
+
 }
