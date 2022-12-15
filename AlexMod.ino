@@ -45,8 +45,6 @@ uint8_t dataflag = 0;
 
 volatile uint16_t step_cnt = 0;
 volatile uint16_t step_max = 0;
-#define DEFAULT_STEP_DELAY 80
-volatile uint16_t step_delay = DEFAULT_STEP_DELAY;
 
 volatile uint8_t main_fsm = 0;
 
@@ -70,7 +68,7 @@ void initUSI() {
 
 void initTimer0() {
   TCCR0A = 0x01;// Enable CTC mode
-  TCCR0B = 0x01;// No clock prescaler. Timer runs at 8MHz
+  TCCR0B = 0x05;// No clock prescaler. Timer runs at 7.812 kHz
 
   OCR0A = 0;
   TIMSK |= (1 << 4);
@@ -153,9 +151,9 @@ ISR(USI_OVF_vect) {
         USISR = 0x70;
       }
 
+      TIFR = (1 << 4);
       step_cnt = 0;
-      step_delay = DEFAULT_STEP_DELAY;// default motor step delay
-      main_fsm = 0;
+      main_fsm = 8;
 
       break;
 
@@ -237,7 +235,7 @@ ISR(TIMER0_COMPA_vect) {
       step_cnt++;
 
       if (step_cnt == step_max) {
-        main_fsm = 3;
+        main_fsm = 8;
         break;
       }
 
@@ -250,10 +248,24 @@ ISR(TIMER0_COMPA_vect) {
       step_cnt++;
 
       if (step_cnt == step_max) {
-        main_fsm = 3;
+        main_fsm = 8;
         break;
       }
 
+      break;
+
+    case 3:// Speed forward
+      OCR1B = pgm_read_byte(&lut[sinU++]);
+      OCR1A = pgm_read_byte(&lut[sinV++]);
+      OCR1D = pgm_read_byte(&lut[sinW++]);
+      
+      break;
+
+    case 4:// Speed backward
+      OCR1B = pgm_read_byte(&lut[sinU--]);
+      OCR1A = pgm_read_byte(&lut[sinV--]);
+      OCR1D = pgm_read_byte(&lut[sinW--]);
+      
       break;
   }
 
@@ -275,11 +287,10 @@ void loop() {
         // FYI. I use 2204 260kV gimbal motor.
         step_max = i2cbuf[2] << 8;
         step_max |= i2cbuf[1];
+        
         OCR0A = i2cbuf[3];
-        if (step_delay < DEFAULT_STEP_DELAY)
-          step_delay = DEFAULT_STEP_DELAY;
 
-        switch (i2cbuf[0] & 0xC0) {
+        switch (i2cbuf[0]) {
           case 0x40:// Step backward
             OCR1B = pgm_read_byte(&lut[sinU]);
             OCR1A = pgm_read_byte(&lut[sinV]);
@@ -295,12 +306,28 @@ void loop() {
             main_fsm = 2;
             initTimer0();
             break;
+
+          case 0x20:// Speed forward
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 3;
+            initTimer0();
+            break;
+
+          case 0x10:// Speed backward
+            OCR1B = pgm_read_byte(&lut[sinU]);
+            OCR1A = pgm_read_byte(&lut[sinV]);
+            OCR1D = pgm_read_byte(&lut[sinW]);
+            main_fsm = 4;
+            initTimer0();
+            break;
         }
       }
 
       break;
       
-    case 3:// go back to main_fsm = 0
+    case 8:// go back to main_fsm = 0
       deinitTimer0();
       PORTA &= ~(1 << 4);
       main_fsm = 0;
