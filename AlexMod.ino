@@ -1,5 +1,5 @@
 // Project AlexMod. Custom firmware for Alexmos SimpleBGC expansion board.
-// Using SPWM technique for BLDC position controlling.
+// Using THSPWM technique for BLDC position controlling.
 // Coded by TinLethax 2022/11/17 +7
 
 #include <avr/power.h>
@@ -20,6 +20,13 @@ uint8_t sinV = 0;
 uint8_t sinW = 0;
 
 // I2C stuffs
+
+// I2C packet
+// Position Mode
+// [Direction][Step LSB][Step MSB][Speed LSB][Speed MSB]
+// Speed mode
+// [Direction][0xFF][0xFF][Speed LSB][Speed MSB]
+
 // I2C Pinout
 // PA0 -> SDA
 // PA2 -> SCL
@@ -38,13 +45,14 @@ volatile uint8_t i2cfsm = 0;
 #define I2C_ADDR  0x30
 
 // I2C buffer
-#define MAX_CMD_BYTE  4 // Command buffer lenght
+#define MAX_CMD_BYTE  5 // Command buffer lenght
 volatile uint8_t i2cbuf[MAX_CMD_BYTE] = {0};
 volatile uint8_t i2ccnt = 0;
 uint8_t dataflag = 0;
 
 volatile uint16_t step_cnt = 0;
 volatile uint16_t step_max = 0;
+volatile uint16_t speed = 0;
 
 volatile uint8_t main_fsm = 0;
 
@@ -66,11 +74,27 @@ void initUSI() {
   USISR = 0xF0;
 }
 
-void initTimer0() {
+void initTimer0(uint16_t HZ) {
   TCCR0A = 0x01;// Enable CTC mode
-  TCCR0B = 0x05;// No clock prescaler. Timer runs at 7.812 kHz
 
-  OCR0A = 0;
+  HZ *= 8;
+  
+  // prescaler vs frequency range
+  // Min 30Hz max 125000Hz
+  if((125000 / HZ) < 256){
+    // CLK/64 clock divider
+    TCCR0B = 0x03;
+    OCR0A = (uint8_t)((125000 / HZ) - 1);
+  }else if((31250 / HZ) < 256){// CLK/256 -> 31250 Hz to 122 Hz
+    // CLK/256 clock divider
+    TCCR0B = 0x04;
+    OCR0A = (uint8_t)((31250 / HZ) - 1); 
+  }else if((7812 / HZ) < 256){// CLK/1024 -> 7812.5Hz to 30.5Hz
+    // CLK/1024 clock divider
+    TCCR0B = 0x05;
+    OCR0A = (uint8_t)((7812 / HZ) - 1);
+  }
+  
   TIMSK |= (1 << 4);
 }
 
@@ -255,16 +279,24 @@ ISR(TIMER0_COMPA_vect) {
       break;
 
     case 3:// Speed forward
-      OCR1B = pgm_read_byte(&lut[sinU++]);
-      OCR1A = pgm_read_byte(&lut[sinV++]);
-      OCR1D = pgm_read_byte(&lut[sinW++]);
+      OCR1B = pgm_read_byte(&lut[sinU]);
+      OCR1A = pgm_read_byte(&lut[sinV]);
+      OCR1D = pgm_read_byte(&lut[sinW]);
+      
+      sinU += 32;
+      sinV += 32;
+      sinW += 32;
       
       break;
 
     case 4:// Speed backward
-      OCR1B = pgm_read_byte(&lut[sinU--]);
-      OCR1A = pgm_read_byte(&lut[sinV--]);
-      OCR1D = pgm_read_byte(&lut[sinW--]);
+      OCR1B = pgm_read_byte(&lut[sinU]);
+      OCR1A = pgm_read_byte(&lut[sinV]);
+      OCR1D = pgm_read_byte(&lut[sinW]);
+      
+      sinU -= 32;
+      sinV -= 32;
+      sinW -= 32;
       
       break;
   }
@@ -288,15 +320,17 @@ void loop() {
         step_max = i2cbuf[2] << 8;
         step_max |= i2cbuf[1];
         
-        OCR0A = i2cbuf[3];
-
+        speed = (i2cbuf[4] << 8) | i2cbuf[3];
+        if(speed < 4)
+          break;
+          
         switch (i2cbuf[0]) {
           case 0x40:// Step backward
             OCR1B = pgm_read_byte(&lut[sinU]);
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 1;
-            initTimer0();
+            initTimer0(speed);
             break;
 
           case 0x80:// Step forward
@@ -304,7 +338,7 @@ void loop() {
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 2;
-            initTimer0();
+            initTimer0(speed);
             break;
 
           case 0x20:// Speed forward
@@ -312,7 +346,7 @@ void loop() {
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 3;
-            initTimer0();
+            initTimer0(speed);
             break;
 
           case 0x10:// Speed backward
@@ -320,7 +354,7 @@ void loop() {
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 4;
-            initTimer0();
+            initTimer0(speed);
             break;
         }
       }
