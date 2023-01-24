@@ -52,7 +52,10 @@ uint8_t dataflag = 0;
 
 volatile uint16_t step_cnt = 0;
 volatile uint16_t step_max = 0;
-volatile uint16_t speed = 0;
+volatile uint8_t speed = 0;
+uint8_t speed_ramp = 0;
+uint8_t ramp_fsm = 0;
+uint16_t ramp_cnt = 0;
 
 volatile uint8_t main_fsm = 0;
 
@@ -74,26 +77,16 @@ void initUSI() {
   USISR = 0xF0;
 }
 
-void initTimer0(uint16_t HZ) {
+void initTimer0(uint8_t HZ) {
   TCCR0A = 0x01;// Enable CTC mode
-
-  HZ *= 8;
+//  if(HZ > 1953)// Max sine frequency is 1.953kHz
+//    return;
+    
+  //HZ <<= 3;// Multiply by 8 with bit shifting
   
-  // prescaler vs frequency range
-  // Min 30Hz max 125000Hz
-  if((125000 / HZ) < 256){
-    // CLK/64 clock divider
-    TCCR0B = 0x03;
-    OCR0A = (uint8_t)((125000 / HZ) - 1);
-  }else if((31250 / HZ) < 256){// CLK/256 -> 31250 Hz to 122 Hz
-    // CLK/256 clock divider
-    TCCR0B = 0x04;
-    OCR0A = (uint8_t)((31250 / HZ) - 1); 
-  }else if((7812 / HZ) < 256){// CLK/1024 -> 7812.5Hz to 30.5Hz
-    // CLK/1024 clock divider
-    TCCR0B = 0x05;
-    OCR0A = (uint8_t)((7812 / HZ) - 1);
-  }
+  // CLK/1024 clock divider
+  TCCR0B = 0x05;
+  OCR0A = (uint8_t)(HZ - 1); 
   
   TIMSK |= (1 << 4);
 }
@@ -114,9 +107,9 @@ void initTimer1() {
   OCR1C = 0xFF; // Counter max
 
   // Set clock prescaler and Invert PWM value
-  TCCR1B = 0x83;// Sync clock mode : CK/4
+  TCCR1B = 0x82;// Sync clock mode : CK/2
   // Set Fast PWM Mode
-  TCCR1D = 0x01;// Enable WGM10 bit (Fast PWM mode)
+  TCCR1D = 0x01;// Enable WGM10 bit (Dual slope PWM mode)
   TCCR1A = 0x03;// Enable PWM1A PWM1B
   TCCR1C = 0x01;// Enable PWM1D
   TCCR1C |= 0x55;// Enable COM1A0, COM1B0 and COM1D0
@@ -124,6 +117,7 @@ void initTimer1() {
 
 void setup() {
   // put your setup code here, to run once:
+  clock_prescale_set(clock_div_1);
   initGPIO();
   initUSI();
   initTimer1();
@@ -176,7 +170,6 @@ ISR(USI_OVF_vect) {
       }
 
       TIFR = (1 << 4);
-      step_cnt = 0;
       main_fsm = 8;
 
       break;
@@ -250,7 +243,7 @@ ISR(USI_OVF_vect) {
 }
 
 ISR(TIMER0_COMPA_vect) {
-  PORTA |= (1 << 4);// Turn LED status on.
+  //PORTA |= (1 << 4);// Turn LED status on.
   switch (main_fsm) {
     case 1:// Step forward
       OCR1B = pgm_read_byte(&lut[sinU++]);
@@ -320,10 +313,10 @@ void loop() {
         step_max = i2cbuf[2] << 8;
         step_max |= i2cbuf[1];
         
-        speed = (i2cbuf[4] << 8) | i2cbuf[3];
-        if(speed < 4)
-          break;
-          
+        //speed = (i2cbuf[4] << 8) | i2cbuf[3];
+        speed = i2cbuf[3];
+        speed_ramp = 61;
+        
         switch (i2cbuf[0]) {
           case 0x40:// Step backward
             OCR1B = pgm_read_byte(&lut[sinU]);
@@ -346,7 +339,7 @@ void loop() {
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 3;
-            initTimer0(speed);
+            initTimer0(speed_ramp);
             break;
 
           case 0x10:// Speed backward
@@ -354,20 +347,38 @@ void loop() {
             OCR1A = pgm_read_byte(&lut[sinV]);
             OCR1D = pgm_read_byte(&lut[sinW]);
             main_fsm = 4;
-            initTimer0(speed);
+            initTimer0(speed_ramp);
             break;
         }
       }
 
       break;
-      
+
     case 8:// go back to main_fsm = 0
       deinitTimer0();
       PORTA &= ~(1 << 4);
       main_fsm = 0;
-      step_cnt = 0x00;
-
+      step_cnt = 0;
+      speed_ramp = 32;
+      ramp_fsm = 0;
+      
       break;
   }
 
+   if((main_fsm == 3) || (main_fsm == 4)){
+     if(ramp_fsm == 0){
+          ramp_cnt++;
+          if(ramp_cnt == 6000){
+           ramp_cnt = 0;
+            PORTA ^= (1 << 4);
+            speed_ramp--;
+            if(speed_ramp <= speed){
+              speed_ramp = speed;
+              ramp_fsm = 1;
+            }
+            initTimer0(speed_ramp);
+            //delay(50);
+        }
+    }
+   }
 }

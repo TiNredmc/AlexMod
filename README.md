@@ -1,6 +1,6 @@
 # Project AlexMod
 AlexMod : Custom firmware for AlexMos SimpleBGC Expansion board  
-Using SPWM for Open loop BLDC motor position controlling.
+Using THSPWM for Open loop BLDC motor position and speed controlling.
 
 How it works ?
 =
@@ -33,9 +33,17 @@ Sending 0 step result in no motor movement.
 
 Sine frequency 
 -
-Sine frequency from 4Hz to 2500Hz. **Send LSB byte first then send the MSB Byte**.  
+Using These fomular to convert form Sine frequency to Timer OCR0A value 
 
-In order to achieve Sine frequency upto 2500Hz. The resolution of Sine Lookup table is downscaled from 256 Sine steps to 8 Sine steps. The LUT step-through frequency is 8 times the Sine frequency.
+```
+  uint16_t motor_speed = 100;// Sine frequency from 4Hz to 300Hz
+  motor_speed <<= 3;// Multiply Sine frequency by 8.
+  motor_speed = 15625 / motor_speed;// Convert to OCR0A counter value. 
+```
+
+**Send LSB byte first then send the MSB Byte**.  
+
+The resolution of Sine Lookup table is downscaled from 256 Sine steps to 8 Sine steps. The LUT step-through frequency is 8 times the Sine frequency.
 
 Note that rotation frequency is lower by the factor of number of magnet pair.  
 Example : Motor with 14 magnets has 7 magnet pairs. With Sine frequency of 700Hz. The mechanical rotation frequency is 700Hz/7 = 100Hz or 100Hz * 60 = 6000 RPM.
@@ -44,7 +52,7 @@ Arduino Setting up. *IMPORTANT*
 =
 
 1. Using ATTinyCore. Select board as **"ATtiny261/461/861(a)"**
-2. Select Clock source to **"8MHz internal"**
+2. Select Clock source to **"16MHz internal"**
 3. Select Timer 1 to **"64MHz"**
 4. Disable millis()/micro() to save flash and reserve Timer 0 for future use.
 5. Don't forget to **Burn bootloader** to update FUSE settings.
